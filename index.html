@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Frosted Pane</title>
+<meta name="description" content="Live frosted glass in three.js. Drag to wipe it clear.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07110b;
+    --ink: #eef5ec;
+    --muted: rgba(238,245,236,.62);
+    --chip: rgba(255,255,255,.08);
+    --chip-on: rgba(255,255,255,.88);
+    --chip-on-ink: #07110b;
+    --line: rgba(255,255,255,.16);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden; }
+  body { font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: crosshair; }
+  .hud { position: fixed; left: 0; right: 0; pointer-events: none; padding: 16px max(16px, env(safe-area-inset-left)); }
+  .top { top: 0; padding-top: max(16px, env(safe-area-inset-top)); display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .bottom { bottom: 0; padding-bottom: max(18px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  h1 { font-family: "Instrument Serif", serif; font-weight: 400; font-size: clamp(28px, 6vw, 44px); letter-spacing: -.01em; margin: 0; line-height: 1; text-shadow: 0 2px 24px rgba(0,0,0,.35); }
+  h1 em { font-style: italic; opacity: .75; }
+  .hint { font-size: 13px; color: var(--muted); letter-spacing: .02em; transition: opacity .8s; }
+  .chips { display: flex; gap: 6px; padding: 5px; border-radius: 999px; background: rgba(0,0,0,.28); border: 1px solid var(--line); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); pointer-events: auto; flex-wrap: wrap; justify-content: center; }
+  .chips button { font: 500 13px/1 Inter, sans-serif; color: var(--ink); background: transparent; border: 0; padding: 10px 14px; border-radius: 999px; cursor: pointer; transition: background .25s, color .25s; }
+  .chips button:hover { background: var(--chip); }
+  .chips button[aria-pressed="true"] { background: var(--chip-on); color: var(--chip-on-ink); }
+  @media (max-width: 420px) { .chips button { padding: 10px 10px; font-size: 12.5px; } }
+  .shade { position: fixed; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(4,12,6,.45), transparent 18%, transparent 80%, rgba(4,12,6,.5)); }
+  .fallback { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="shade"></div>
+
+<div class="hud top">
+  <h1>Frosted <em>pane</em></h1>
+  <span class="hint" id="hint">drag to wipe the glass</span>
+</div>
+
+<div class="hud bottom">
+  <div class="chips" role="group" aria-label="Glass type">
+    <button data-glass="pebbled" aria-pressed="true">Frosted</button>
+    <button data-glass="hammered" aria-pressed="false">Hammered</button>
+    <button data-glass="reeded" aria-pressed="false">Reeded</button>
+    <button data-glass="rain" aria-pressed="false">Rain</button>
+    <button data-glass="clear" aria-pressed="false">Clear</button>
+  </div>
+</div>
+
+<div class="fallback" id="fallback">This one needs WebGL. Try it in Safari or Chrome.</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const canvas = document.getElementById('c');
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+} catch (e) {
+  document.getElementById('fallback').style.display = 'grid';
+  throw e;
+}
+const mobile = matchMedia('(pointer: coarse)').matches;
+renderer.setPixelRatio(Math.min(devicePixelRatio, mobile ? 1.75 : 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0b1d10');
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+camera.position.set(0, 0, 6);
+
+// ---------- the world behind the glass ----------
+const behind = new THREE.Group();
+scene.add(behind);
+
+// soft backdrop: a big gradient wall so the frost has something to smear
+function gradientTex() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0, '#2c5a26'); grd.addColorStop(.45, '#14361a'); grd.addColorStop(1, '#06140a');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 256);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(40, 24), new THREE.MeshBasicMaterial({ map: gradientTex() }));
+wall.position.z = -9;
+behind.add(wall);
+
+// a sun-patch, the bright smear in the top-left of the clip
+const sun = new THREE.Mesh(new THREE.CircleGeometry(2.6, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 3.0, 2.6) }));
+sun.position.set(-3.2, 1.8, -7);
+behind.add(sun);
+
+// leaves: glowing blobs in greens and yellows, drifting
+const leafColors = ['#9fdc6a', '#6fbf4a', '#cfe88a', '#3f8f3a', '#e8f2b0', '#7ad08a'];
+const leaves = [];
+const leafGeo = new THREE.SphereGeometry(1, 24, 16);
+for (let i = 0; i < 46; i++) {
+  const col = new THREE.Color(leafColors[i % leafColors.length]);
+  const glow = 0.5 + Math.random() * 1.6;
+  const m = new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(glow) });
+  const s = new THREE.Mesh(leafGeo, m);
+  const r = 0.12 + Math.random() * 0.42;
+  s.scale.setScalar(r);
+  s.position.set((Math.random() - .5) * 11, (Math.random() - .5) * 7, -2.2 - Math.random() * 5.5);
+  s.userData = { base: s.position.clone(), sp: .2 + Math.random() * .5, ph: Math.random() * 6.28 };
+  behind.add(s); leaves.push(s);
+}
+
+// a record spinning behind the glass, because of course
+function recordTex() {
+  const N = 1024, c = document.createElement('canvas'); c.width = c.height = N;
+  const g = c.getContext('2d'), cx = N / 2;
+  g.fillStyle = '#0a0a0a'; g.beginPath(); g.arc(cx, cx, cx, 0, 7); g.fill();
+  for (let r = cx * .36; r < cx * .98; r += 2.2) {
+    g.strokeStyle = `rgba(255,255,255,${0.025 + Math.random() * 0.05})`;
+    g.lineWidth = 1; g.beginPath(); g.arc(cx, cx, r, 0, 7); g.stroke();
+  }
+  const lg = g.createRadialGradient(cx, cx, 0, cx, cx, cx * .33);
+  lg.addColorStop(0, '#f2c14e'); lg.addColorStop(1, '#d9573b');
+  g.fillStyle = lg; g.beginPath(); g.arc(cx, cx, cx * .33, 0, 7); g.fill();
+  g.fillStyle = '#1a0d08'; g.font = 'italic 64px Georgia, serif'; g.textAlign = 'center';
+  g.fillText('Spindle', cx, cx - 70);
+  g.font = '28px Georgia, serif'; g.fillText('side A  ·  33⅓', cx, cx + 100);
+  g.fillStyle = '#07110b'; g.beginPath(); g.arc(cx, cx, 14, 0, 7); g.fill();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+const record = new THREE.Mesh(
+  new THREE.CircleGeometry(1.55, 96),
+  new THREE.MeshStandardMaterial({ map: recordTex(), roughness: .35, metalness: .2 })
+);
+record.position.set(1.5, -0.15, -2.6);
+record.rotation.y = -0.35;
+behind.add(record);
+const recLight = new THREE.PointLight('#fff2d6', 18, 12);
+recLight.position.set(-1, 2, 0.5);
+behind.add(recLight);
+
+// ---------- textures for the glass ----------
+const NS = 512;
+function heightToNormal(h, strength) {
+  const data = new Uint8Array(NS * NS * 4);
+  const at = (x, y) => h[((y + NS) % NS) * NS + ((x + NS) % NS)];
+  for (let y = 0; y < NS; y++) for (let x = 0; x < NS; x++) {
+    const dx = (at(x + 1, y) - at(x - 1, y)) * strength;
+    const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
+    const l = Math.hypot(dx, dy, 1);
+    const i = (y * NS + x) * 4;
+    data[i] = (-dx / l * .5 + .5) * 255;
+    data[i + 1] = (dy / l * .5 + .5) * 255;
+    data[i + 2] = (1 / l * .5 + .5) * 255;
+    data[i + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, NS, NS);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true; t.needsUpdate = true;
+  return t;
+}
+// wrapped box blur, run a few passes for a near-gaussian
+function blurWrap(h, r, passes) {
+  let a = h, b = new Float32Array(NS * NS);
+  for (let p = 0; p < passes; p++) {
+    for (let y = 0; y < NS; y++) {
+      let s = 0;
+      for (let k = -r; k <= r; k++) s += a[y * NS + ((k + NS) % NS)];
+      for (let x = 0; x < NS; x++) {
+        b[y * NS + x] = s / (2 * r + 1);
+        s += a[y * NS + ((x + r + 1) % NS)] - a[y * NS + ((x - r + NS) % NS)];
+      }
+    }
+    for (let x = 0; x < NS; x++) {
+      let s = 0;
+      for (let k = -r; k <= r; k++) s += b[((k + NS) % NS) * NS + x];
+      for (let y = 0; y < NS; y++) {
+        a[y * NS + x] = s / (2 * r + 1);
+        s += b[((y + r + 1) % NS) * NS + x] - b[((y - r + NS) % NS) * NS + x];
+      }
+    }
+  }
+  return a;
+}
+function noiseLayer(r, passes) {
+  const h = new Float32Array(NS * NS);
+  for (let i = 0; i < h.length; i++) h[i] = Math.random();
+  return blurWrap(h, r, passes);
+}
+function pebbled() {
+  // the clip's glass: soft irregular bumps at two scales, no hard edges
+  const big = noiseLayer(9, 3), small = noiseLayer(3, 3);
+  const h = new Float32Array(NS * NS);
+  for (let i = 0; i < h.length; i++) h[i] = big[i] * 1.0 + small[i] * 0.45;
+  return heightToNormal(h, 70);
+}
+function hammered() {
+  const G = 22, cell = NS / G, pts = [];
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++)
+    pts.push([(i + .15 + Math.random() * .7) * cell, (j + .15 + Math.random() * .7) * cell]);
+  const h = new Float32Array(NS * NS);
+  for (let y = 0; y < NS; y++) for (let x = 0; x < NS; x++) {
+    const ci = Math.floor(x / cell), cj = Math.floor(y / cell);
+    let d1 = 1e9;
+    for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+      const ii = (ci + a + G) % G, jj = (cj + b + G) % G;
+      const p = pts[jj * G + ii];
+      let dx = x - p[0], dy = y - p[1];
+      if (dx > NS / 2) dx -= NS; if (dx < -NS / 2) dx += NS;
+      if (dy > NS / 2) dy -= NS; if (dy < -NS / 2) dy += NS;
+      d1 = Math.min(d1, dx * dx + dy * dy);
+    }
+    h[y * NS + x] = Math.sqrt(d1) / cell; // dimples
+  }
+  return heightToNormal(blurWrap(h, 3, 2), 7);
+}
+function reeded() {
+  const h = new Float32Array(NS * NS), flutes = 16, w = NS / flutes;
+  for (let y = 0; y < NS; y++) for (let x = 0; x < NS; x++) {
+    const u = (x % w) / w - .5;
+    h[y * NS + x] = Math.sqrt(Math.max(0, .25 - u * u)) * 2.2;
+  }
+  return heightToNormal(h, 7);
+}
+function rain() {
+  const h = new Float32Array(NS * NS);
+  for (let k = 0; k < 260; k++) {
+    const cx = Math.random() * NS, cy = Math.random() * NS;
+    const r = 3 + Math.pow(Math.random(), 3) * 26;
+    const r2 = r * r;
+    for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++) {
+      const dx = x - cx, dy = (y - cy) * 1.15, d2 = dx * dx + dy * dy;
+      if (d2 < r2) {
+        const i = ((y + NS) % NS) * NS + ((x + NS) % NS);
+        h[i] = Math.max(h[i], Math.sqrt(r2 - d2) / 10);
+      }
+    }
+  }
+  return heightToNormal(h, 5);
+}
+const glassMaps = { pebbled: pebbled(), hammered: hammered(), reeded: reeded(), rain: rain() };
+
+// frost map: white = frosted, black = wiped. Fogs back over time.
+const FW = 512, FH = 320;
+const frostCanvas = document.createElement('canvas'); frostCanvas.width = FW; frostCanvas.height = FH;
+const fx = frostCanvas.getContext('2d');
+fx.fillStyle = '#fff'; fx.fillRect(0, 0, FW, FH);
+const frostTex = new THREE.CanvasTexture(frostCanvas);
+frostTex.colorSpace = THREE.NoColorSpace;
+
+// ---------- the glass ----------
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: '#ffffff',
+  transmission: 1,
+  thickness: 1.1,
+  ior: 1.52,
+  roughness: 0.62,
+  roughnessMap: frostTex,
+  metalness: 0,
+  normalMap: glassMaps.pebbled,
+  normalScale: new THREE.Vector2(1, 1),
+  specularIntensity: 1,
+  clearcoat: 0.4,
+  clearcoatRoughness: 0.15,
+  attenuationColor: new THREE.Color('#e9fbef'),
+  attenuationDistance: 6,
+  envMapIntensity: 1.1,
+});
+// where the frost is wiped, flatten the texture too, so the wipe reads as clear glass
+glassMat.onBeforeCompile = (sh) => {
+  sh.fragmentShader = sh.fragmentShader.replace(
+    '#include <normal_fragment_maps>',
+    THREE.ShaderChunk.normal_fragment_maps.replace(
+      'mapN.xy *= normalScale;',
+      'mapN.xy *= normalScale * mix(0.05, 1.0, texture2D(roughnessMap, vRoughnessMapUv).g);'
+    )
+  );
+};
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), glassMat);
+scene.add(glass);
+
+// thin frame lines, like a window muntin grid
+const frame = new THREE.Group();
+glass.add(frame);
+const frameMat = new THREE.MeshStandardMaterial({ color: '#9fae9a', roughness: .45, metalness: .7 });
+
+function layout() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.fov = w < h ? 55 : 40;
+  camera.updateProjectionMatrix();
+  const dist = camera.position.z;
+  const vh = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const vw = vh * camera.aspect;
+  glass.scale.set(vw * 1.08, vh * 1.08, 1);
+  // repeat the texture by physical size so dimples stay round at any aspect
+  const rep = Math.max(1.1, vw / 3.6);
+  for (const t of Object.values(glassMaps)) t.repeat.set(rep, rep * (vh / vw));
+  // rebuild muntins
+  frame.clear();
+  const bar = 0.006, cols = vw > vh ? 3 : 2, rows = vw > vh ? 2 : 3;
+  for (let i = 1; i < cols; i++) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bar * vh / vw, 1, 0.01), frameMat);
+    m.position.set(-.5 + i / cols, 0, 0.01); frame.add(m);
+  }
+  for (let j = 1; j < rows; j++) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1, bar, 0.01), frameMat);
+    m.position.set(0, -.5 + j / rows, 0.01); frame.add(m);
+  }
+}
+addEventListener('resize', layout);
+layout();
+
+// ---------- interaction ----------
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const tilt = new THREE.Vector2();
+let lastUV = null, wiping = false, hinted = false;
+
+function wipeAt(uv) {
+  const x = uv.x * FW, y = (1 - uv.y) * FH;
+  const r = mobile ? 34 : 28;
+  const from = lastUV ? { x: lastUV.x * FW, y: (1 - lastUV.y) * FH } : { x, y };
+  const steps = Math.max(1, Math.ceil(Math.hypot(x - from.x, y - from.y) / (r * .35)));
+  for (let s = 1; s <= steps; s++) {
+    const px = from.x + (x - from.x) * s / steps, py = from.y + (y - from.y) * s / steps;
+    const g = fx.createRadialGradient(px, py, 0, px, py, r);
+    g.addColorStop(0, 'rgba(0,0,0,.9)'); g.addColorStop(.6, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    fx.fillStyle = g; fx.beginPath(); fx.arc(px, py, r, 0, 7); fx.fill();
+  }
+  lastUV = uv.clone();
+}
+function pointer(e) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  tilt.copy(ndc);
+  if (!wiping) return;
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObject(glass, false)[0];
+  if (hit && hit.uv) wipeAt(hit.uv);
+  if (!hinted) { hinted = true; document.getElementById('hint').style.opacity = 0; }
+}
+canvas.addEventListener('pointerdown', e => { wiping = true; lastUV = null; canvas.setPointerCapture(e.pointerId); pointer(e); });
+canvas.addEventListener('pointermove', pointer);
+const stop = () => { wiping = false; lastUV = null; };
+canvas.addEventListener('pointerup', stop);
+canvas.addEventListener('pointercancel', stop);
+
+// device tilt on phones
+addEventListener('deviceorientation', e => {
+  if (e.gamma == null) return;
+  tilt.set(THREE.MathUtils.clamp(e.gamma / 30, -1, 1), THREE.MathUtils.clamp((e.beta - 45) / -30, -1, 1));
+});
+
+document.querySelectorAll('[data-glass]').forEach(b => b.addEventListener('click', () => {
+  const kind = b.dataset.glass;
+  if (kind === 'clear') {
+    fx.fillStyle = '#000'; fx.fillRect(0, 0, FW, FH);
+    return;
+  }
+  document.querySelectorAll('[data-glass]').forEach(o => o.setAttribute('aria-pressed', String(o === b)));
+  glassMat.normalMap = glassMaps[kind];
+  glassMat.normalScale.setScalar({ pebbled: 1, hammered: 0.8, reeded: 1.4, rain: 1.2 }[kind]);
+  glassMat.roughness = kind === 'rain' ? 0.5 : 0.62;
+  glassMat.needsUpdate = true;
+}));
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+let fogAcc = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+
+  for (const s of leaves) {
+    const u = s.userData;
+    s.position.x = u.base.x + Math.sin(t * u.sp + u.ph) * 0.35;
+    s.position.y = u.base.y + Math.cos(t * u.sp * .8 + u.ph) * 0.25;
+  }
+  record.rotation.z -= dt * 3.49 * 0.55; // a lazy 33
+  sun.position.x = -3.2 + Math.sin(t * .15) * .6;
+
+  // glass leans toward the pointer, parallax shifts the world
+  glass.rotation.y += (tilt.x * 0.06 - glass.rotation.y) * 0.06;
+  glass.rotation.x += (-tilt.y * 0.04 - glass.rotation.x) * 0.06;
+  behind.position.x += (-tilt.x * 0.35 - behind.position.x) * 0.04;
+  behind.position.y += (-tilt.y * 0.2 - behind.position.y) * 0.04;
+
+  // breath fogs it back up, slowly
+  fogAcc += dt;
+  if (fogAcc > 1 / 30) {
+    fx.fillStyle = `rgba(255,255,255,${wiping ? 0.004 : 0.012})`;
+    fx.fillRect(0, 0, FW, FH);
+    fogAcc = 0;
+  }
+  frostTex.needsUpdate = true;
+
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
