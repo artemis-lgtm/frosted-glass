@@ -89,23 +89,23 @@ function haloTex() {
 }
 const halo = new THREE.Mesh(
   new THREE.PlaneGeometry(R * 3.1, R * 3.1),
-  new THREE.MeshBasicMaterial({ map: haloTex(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85 })
+  new THREE.MeshBasicMaterial({ map: haloTex(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.62 })
 );
 halo.position.z = 0.002;
 scene.add(halo);
 
 // ---------- lights ----------
-const key = new THREE.SpotLight('#fff1e0', 60, 30, Math.PI / 6, 0.6, 1.4);
+const key = new THREE.SpotLight('#fff1e0', 40, 30, Math.PI / 6, 0.6, 1.4);
 key.position.set(-4, 5, 9);
 key.castShadow = true;
 key.shadow.mapSize.set(1024, 1024);
 key.shadow.radius = 6;
 key.shadow.bias = -0.0004;
 scene.add(key, key.target);
-const ledRing = new THREE.PointLight('#ffae5a', 6, 4, 1.6); // the strip, behind the disc
+const ledRing = new THREE.PointLight('#ffae5a', 4.2, 4, 1.6); // the strip, behind the disc
 ledRing.position.set(0, 0, STANDOFF * 0.5);
 scene.add(ledRing);
-scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.35));
+scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.26));
 
 // ---------- the record ----------
 const sconce = new THREE.Group();          // pivots about the center post
@@ -198,7 +198,7 @@ function layout() {
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
-  const want = R * 2 * (w < h ? 1.32 : 1.55);   // fit the glow inside the shorter side
+  const want = R * 2 * (w < h ? 1.1 : 1.24);   // fit the glow inside the shorter side
   const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
   camera.position.set(0, 0, Math.max(want / 2 / tanV, want / 2 / (tanV * camera.aspect)));
   camera.lookAt(0, 0, 0);
@@ -263,7 +263,7 @@ renderer.setAnimationLoop(() => {
   sconce.position.z = Math.max(STANDOFF, R * Math.sin(ang) + 0.08);
   // the edge that lifts off the wall lets more light out
   halo.position.set(-tilt.x * 0.25, tilt.y * 0.25, 0.002);
-  halo.material.opacity = 0.85 + Math.min(0.1, (Math.abs(tilt.x) + Math.abs(tilt.y)) * 0.15);
+  halo.material.opacity = 0.62 + Math.min(0.1, (Math.abs(tilt.x) + Math.abs(tilt.y)) * 0.15);
   renderer.render(scene, camera);
 });
 </script>
