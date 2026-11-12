@@ -42,6 +42,10 @@
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const canvas = document.getElementById('c');
 let renderer;
@@ -49,12 +53,13 @@ try {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 } catch (e) { document.getElementById('fallback').style.display = 'grid'; throw e; }
 const mobile = matchMedia('(pointer: coarse)').matches;
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const PR = Math.min(Math.max(devicePixelRatio, 1) * 1.5, 3); // supersampled so circle edges stay clean
+renderer.setPixelRatio(PR);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.VSMShadowMap;
 
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -95,24 +100,25 @@ halo.position.z = 0.002;
 scene.add(halo);
 
 // ---------- lights ----------
-const key = new THREE.SpotLight('#fff1e0', 40, 30, Math.PI / 6, 0.6, 1.4);
-key.position.set(-4, 5, 9);
+const key = new THREE.SpotLight('#fff1e0', 34, 30, Math.PI / 5, 1.0, 1.4); // overhead, soft edge
+key.position.set(0, 9.5, 5.5);
 key.castShadow = true;
-key.shadow.mapSize.set(1024, 1024);
-key.shadow.radius = 6;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 14;
+key.shadow.blurSamples = 24;
 key.shadow.bias = -0.0004;
 scene.add(key, key.target);
-const ledRing = new THREE.PointLight('#ffae5a', 4.2, 4, 1.6); // the strip, behind the disc
+const ledRing = new THREE.PointLight('#ffae5a', 3.6, 4, 1.6); // the strip, behind the disc
 ledRing.position.set(0, 0, STANDOFF * 0.5);
 scene.add(ledRing);
-scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.26));
+scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.32));
 
 // ---------- the record ----------
 const sconce = new THREE.Group();          // pivots about the center post
 sconce.position.z = STANDOFF;
 scene.add(sconce);
 
-const TEX = mobile ? 1536 : 2048;
+const TEX = Math.min(mobile ? 3072 : 4096, renderer.capabilities.maxTextureSize);
 function vinylFace(labelImg) {
   const c = document.createElement('canvas'); c.width = c.height = TEX;
   const g = c.getContext('2d'), m = TEX / 2, px = m / R;
@@ -122,7 +128,7 @@ function vinylFace(labelImg) {
   for (let r = LABEL_R + 0.09; r < R - 0.04; r += 0.0036) {
     const inGap = gaps.some(gp => Math.abs(r - gp) < 0.012);
     g.strokeStyle = inGap ? 'rgba(255,255,255,0.10)' : `rgba(255,255,255,${0.018 + Math.random() * 0.03})`;
-    g.lineWidth = 1; g.beginPath(); g.arc(m, m, r * px, 0, 7); g.stroke();
+    g.lineWidth = TEX / 2048; g.beginPath(); g.arc(m, m, r * px, 0, 7); g.stroke();
   }
   // printed label, clipped to its circle
   g.save(); g.beginPath(); g.arc(m, m, LABEL_R * px, 0, 7); g.clip();
@@ -160,30 +166,30 @@ const faceMat = new THREE.MeshPhysicalMaterial({
   anisotropy: 0.7, anisotropyMap: grooveAniso(),
   envMapIntensity: 0.55,
 });
-const face = new THREE.Mesh(new THREE.CircleGeometry(R, 160), faceMat);
+const face = new THREE.Mesh(new THREE.CircleGeometry(R, 512), faceMat);
 face.position.z = THICK / 2;
 face.castShadow = true;
 sconce.add(face);
 const edge = new THREE.Mesh(
-  new THREE.CylinderGeometry(R, R, THICK, 160, 1, true),
+  new THREE.CylinderGeometry(R, R, THICK, 512, 1, true),
   new THREE.MeshPhysicalMaterial({ color: '#0d0d0e', roughness: 0.3, clearcoat: 0.5 })
 );
 edge.rotation.x = Math.PI / 2;
 edge.castShadow = true;
 sconce.add(edge);
-const back = new THREE.Mesh(new THREE.CircleGeometry(R, 96), new THREE.MeshStandardMaterial({ color: '#0b0b0c', roughness: 0.4 }));
+const back = new THREE.Mesh(new THREE.CircleGeometry(R, 256), new THREE.MeshStandardMaterial({ color: '#0b0b0c', roughness: 0.4 }));
 back.rotation.y = Math.PI; back.position.z = -THICK / 2; back.castShadow = true;
 sconce.add(back);
 
 // chrome dome cap on a thin bezel
-const chrome = new THREE.MeshPhysicalMaterial({ color: '#ffffff', metalness: 1, roughness: 0.04, envMapIntensity: 2.2 });
+const chrome = new THREE.MeshPhysicalMaterial({ color: '#ffffff', metalness: 1, roughness: 0.035, envMapIntensity: 1.5 });
 const DOME_R = 0.188, DOME_H = 0.105, RIM_H = 0.03;
 const sphR = (DOME_R * DOME_R + DOME_H * DOME_H) / (2 * DOME_H);
-const dome = new THREE.Mesh(new THREE.SphereGeometry(sphR, 96, 48, 0, Math.PI * 2, 0, Math.asin(DOME_R / sphR)), chrome);
+const dome = new THREE.Mesh(new THREE.SphereGeometry(sphR, 256, 96, 0, Math.PI * 2, 0, Math.asin(DOME_R / sphR)), chrome);
 dome.rotation.x = Math.PI / 2;
 dome.position.z = THICK / 2 + RIM_H - (sphR - DOME_H);
 dome.castShadow = true;
-const rim = new THREE.Mesh(new THREE.CylinderGeometry(DOME_R + 0.004, DOME_R + 0.004, RIM_H, 96), chrome);
+const rim = new THREE.Mesh(new THREE.CylinderGeometry(DOME_R + 0.004, DOME_R + 0.004, RIM_H, 256), chrome);
 rim.rotation.x = Math.PI / 2;
 rim.position.z = THICK / 2 + RIM_H / 2;
 sconce.add(dome, rim);
@@ -193,12 +199,45 @@ new THREE.ImageLoader().load('label.jpg', img => {
   faceMat.needsUpdate = true;
 });
 
+// ---------- lens: MSAA + focus falls off toward the edges ----------
+const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+const LensBlur = {
+  uniforms: { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, focus: { value: 0.16 }, amount: { value: 9.0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform vec2 res; uniform float focus, amount; varying vec2 vUv;
+    void main(){
+      vec2 p = (vUv - 0.5) * vec2(res.x / res.y, 1.0);
+      float d = length(p);
+      float coc = smoothstep(focus, focus + 0.42, d) * amount; // radius in px, sharp in the middle
+      if (coc < 0.25) { gl_FragColor = texture2D(tDiffuse, vUv); return; }
+      vec4 acc = vec4(0.0); float wsum = 0.0;
+      const float GA = 2.39996323;
+      for (int i = 0; i < 48; i++) {
+        float fi = float(i);
+        float rr = sqrt((fi + 0.5) / 48.0) * coc;
+        vec2 off = vec2(cos(fi * GA), sin(fi * GA)) * rr / res;
+        acc += texture2D(tDiffuse, vUv + off); wsum += 1.0;
+      }
+      gl_FragColor = acc / wsum;
+    }`,
+};
+const lens = new ShaderPass(LensBlur);
+composer.addPass(lens);
+composer.addPass(new OutputPass());
+
 // ---------- framing ----------
 function layout() {
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h, false);
+  composer.setPixelRatio(PR);
+  composer.setSize(w, h);
+  lens.uniforms.res.value.set(w * PR, h * PR);
+  lens.uniforms.amount.value = 7.0 * PR;
   camera.aspect = w / h;
-  const want = R * 2 * (w < h ? 1.1 : 1.24);   // fit the glow inside the shorter side
+  const want = R * 2 * (w < h ? 0.84 : 0.96);   // fit the glow inside the shorter side
   const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
   camera.position.set(0, 0, Math.max(want / 2 / tanV, want / 2 / (tanV * camera.aspect)));
   camera.lookAt(0, 0, 0);
@@ -264,7 +303,7 @@ renderer.setAnimationLoop(() => {
   // the edge that lifts off the wall lets more light out
   halo.position.set(-tilt.x * 0.25, tilt.y * 0.25, 0.002);
   halo.material.opacity = 0.62 + Math.min(0.1, (Math.abs(tilt.x) + Math.abs(tilt.y)) * 0.15);
-  renderer.render(scene, camera);
+  composer.render();
 });
 </script>
 </body>
