@@ -16,7 +16,7 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden; overscroll-behavior: none; }
   body { font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; }
-  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: grab; }
+  canvas { opacity: 0; transition: opacity .9s ease; display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: grab; }
   canvas:active { cursor: grabbing; }
   .hud { position: fixed; left: 0; right: 0; pointer-events: none; padding: 16px max(16px, env(safe-area-inset-left)); }
   .top { top: 0; padding-top: max(16px, env(safe-area-inset-top)); }
@@ -41,7 +41,7 @@
 </script>
 <script type="module">
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -60,41 +60,80 @@ renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.VSMShadowMap;
+renderer.shadowMap.autoUpdate = false;
 
 const scene = new THREE.Scene();
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.03).texture;
-
 const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
 
 // ---------- dimensions (12 in record scaled so radius = 1.5) ----------
 const R = 1.5, LABEL_R = 0.5, THICK = 0.016, STANDOFF = 0.34;
+const GAPS = [0.62, 0.86, 1.10];           // silent bands between the four songs on side two
+const rand = (() => { let s = 20241971; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; })();
+
+// ---------- the room the chrome sees: a photographed hotel room (Poly Haven, CC0) ----------
+// It lives on layer 1, so only the reflection probe sees it. The page camera never does.
+const ROOM_LAYER = 1;
+const roomMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const roomGeo = new THREE.SphereGeometry(40, 64, 32); roomGeo.scale(1, 1, -1);
+const room = new THREE.Mesh(roomGeo, roomMat);
+room.layers.set(ROOM_LAYER);
+scene.add(room);
+const pmrem = new THREE.PMREMGenerator(renderer);
+let ready = 0;
+const reveal = () => { if (++ready === 2) canvas.style.opacity = 1; };
+new RGBELoader().load('hotel_room_1k.hdr', hdr => {
+  hdr.colorSpace = THREE.LinearSRGBColorSpace;
+  roomMat.map = hdr; roomMat.color.setScalar(ROOM_LEVEL); roomMat.needsUpdate = true;
+  const envScene = new THREE.Scene();
+  const copy = new THREE.Mesh(roomGeo, roomMat); copy.rotation.copy(room.rotation);
+  envScene.add(copy);
+  scene.environment = pmrem.fromScene(envScene, 0, 0.1, 100).texture;
+  reveal();
+}, undefined, reveal);
+const ROOM_LEVEL = 0.5;                  // a dim evening room: walls fall to grey, windows and lamps stay hot
+room.rotation.set(-0.3, -0.35, 0);
 
 // ---------- the wall ----------
+function wallBump() {   // orange-peel roller texture of painted drywall
+  const n = 256, small = document.createElement('canvas'); small.width = small.height = n;
+  const sg = small.getContext('2d'), id = sg.createImageData(n, n);
+  for (let i = 0; i < n * n; i++) { const v = 96 + rand() * 64; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; }
+  sg.putImageData(id, 0, 0);
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.drawImage(small, 0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(14, 14);
+  t.anisotropy = 8; return t;
+}
 const wall = new THREE.Mesh(
   new THREE.PlaneGeometry(30, 30),
-  new THREE.MeshStandardMaterial({ color: '#8a8178', roughness: 0.92, metalness: 0, envMapIntensity: 0.4 })
+  new THREE.MeshStandardMaterial({ color: '#8a8178', roughness: 0.9, metalness: 0, envMapIntensity: 0.6, bumpMap: wallBump(), bumpScale: 0.6 })
 );
 wall.receiveShadow = true;
 scene.add(wall);
 
-// warm halo the LED ring throws on the wall
+// warm wash the LED strip throws on the wall: hottest just behind the rim, long soft tail
 function haloTex() {
-  const N = 512, c = document.createElement('canvas'); c.width = c.height = N;
+  const N = 1024, c = document.createElement('canvas'); c.width = c.height = N;
   const g = c.getContext('2d'), m = N / 2;
   const grd = g.createRadialGradient(m, m, 0, m, m, m);
-  grd.addColorStop(0.00, 'rgba(255,170,80,0.0)');
-  grd.addColorStop(0.42, 'rgba(255,170,80,0.55)');
-  grd.addColorStop(0.50, 'rgba(255,190,110,1.0)');
-  grd.addColorStop(0.62, 'rgba(255,150,60,0.45)');
-  grd.addColorStop(0.80, 'rgba(255,130,50,0.12)');
-  grd.addColorStop(1.00, 'rgba(255,120,40,0.0)');
+  const S = 2.1;                         // plane half-size in record radii
+  for (let i = 0; i <= 64; i++) {
+    const rr = i / 64 * S;               // radius in record radii
+    const d = Math.abs(rr - 0.9);        // the strip sits just inside the rim
+    let a = 1 / (1 + Math.pow(d / 0.16, 2.0));
+    a *= 1 - THREE.MathUtils.smoothstep(rr, S * 0.72, S);
+    a *= THREE.MathUtils.smoothstep(rr, 0.15, 0.6);
+    const warm = Math.min(1, d / 0.5);   // deeper orange as it thins out
+    grd.addColorStop(i / 64, `rgba(255,${Math.round(178 - 44 * warm)},${Math.round(98 - 52 * warm)},${a.toFixed(4)})`);
+  }
   g.fillStyle = grd; g.fillRect(0, 0, N, N);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
+const HALO = 0.5;
 const halo = new THREE.Mesh(
-  new THREE.PlaneGeometry(R * 3.1, R * 3.1),
-  new THREE.MeshBasicMaterial({ map: haloTex(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.62 })
+  new THREE.PlaneGeometry(R * 4.2, R * 4.2),
+  new THREE.MeshBasicMaterial({ map: haloTex(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: HALO })
 );
 halo.position.z = 0.002;
 scene.add(halo);
@@ -108,63 +147,115 @@ key.shadow.radius = 14;
 key.shadow.blurSamples = 24;
 key.shadow.bias = -0.0004;
 scene.add(key, key.target);
+// the lamp itself, so the mirror has something to catch: a small hot disc where the key light hangs
+const lamp = new THREE.Mesh(new THREE.CircleGeometry(0.55, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.93, 0.84).multiplyScalar(26) }));
+lamp.position.copy(key.position); lamp.lookAt(0, 0, 0); lamp.layers.set(ROOM_LAYER);
+scene.add(lamp);
 const ledRing = new THREE.PointLight('#ffae5a', 3.6, 4, 1.6); // the strip, behind the disc
 ledRing.position.set(0, 0, STANDOFF * 0.5);
 scene.add(ledRing);
-scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.32));
+scene.add(new THREE.HemisphereLight('#fff4ea', '#2a2420', 0.2));
 
 // ---------- the record ----------
 const sconce = new THREE.Group();          // pivots about the center post
 sconce.position.z = STANDOFF;
 scene.add(sconce);
 
+const DOME_R = 0.188, DOME_H = 0.105, RIM_H = 0.026, SEAT = 0.014, BEZEL_R = DOME_R + 0.02;
 const TEX = Math.min(mobile ? 3072 : 4096, renderer.capabilities.maxTextureSize);
 function vinylFace(labelImg) {
   const c = document.createElement('canvas'); c.width = c.height = TEX;
   const g = c.getContext('2d'), m = TEX / 2, px = m / R;
-  g.fillStyle = '#0b0b0c'; g.beginPath(); g.arc(m, m, m, 0, 7); g.fill();
-  // grooves, with gaps between the four songs on side two
-  const gaps = [0.62, 0.86, 1.10];
+  g.fillStyle = '#050506'; g.fillRect(0, 0, TEX, TEX);
+  // the faintest trace of each groove; the shine does the real work
   for (let r = LABEL_R + 0.09; r < R - 0.04; r += 0.0036) {
-    const inGap = gaps.some(gp => Math.abs(r - gp) < 0.012);
-    g.strokeStyle = inGap ? 'rgba(255,255,255,0.10)' : `rgba(255,255,255,${0.018 + Math.random() * 0.03})`;
+    if (GAPS.some(gp => Math.abs(r - gp) < 0.012)) continue;
+    g.strokeStyle = `rgba(255,255,255,${0.004 + rand() * 0.012})`;
     g.lineWidth = TEX / 2048; g.beginPath(); g.arc(m, m, r * px, 0, 7); g.stroke();
   }
   // printed label, clipped to its circle
   g.save(); g.beginPath(); g.arc(m, m, LABEL_R * px, 0, 7); g.clip();
   const lw = LABEL_R * px * 2 / 0.965; // the photo's label edge sits just inside the frame
   g.drawImage(labelImg, m - lw / 2, m - lw / 2, lw, lw);
+  g.globalCompositeOperation = 'multiply'; g.fillStyle = 'rgb(205,200,194)'; g.fillRect(0, 0, TEX, TEX);
+  g.globalCompositeOperation = 'source-over';
+  // the cap sits on the paper: soft occlusion hugging the bezel
+  const ao = g.createRadialGradient(m, m, BEZEL_R * px * 0.96, m, m, (BEZEL_R + 0.07) * px);
+  ao.addColorStop(0, 'rgba(8,5,3,0.62)'); ao.addColorStop(0.3, 'rgba(8,5,3,0.24)'); ao.addColorStop(1, 'rgba(8,5,3,0)');
+  g.fillStyle = ao; g.fillRect(0, 0, TEX, TEX);
   g.restore();
+  // a lived-in record: a little dust and a couple of fibres, nothing you notice until it is missing
+  for (let i = 0; i < 2600; i++) {
+    const a = rand() * 6.283, r = Math.sqrt(rand()) * R * px, s = (0.25 + rand() * rand() * 1.5) * TEX / 2048;
+    g.fillStyle = `rgba(214,208,198,${(0.05 + rand() * 0.22).toFixed(3)})`;
+    g.beginPath(); g.arc(m + Math.cos(a) * r, m + Math.sin(a) * r, s, 0, 7); g.fill();
+  }
+  g.lineWidth = 0.6 * TEX / 2048; g.lineCap = 'round';
+  for (let i = 0; i < 26; i++) {
+    const a = rand() * 6.283, r = (0.25 + rand() * 0.72) * R * px, x = m + Math.cos(a) * r, y = m + Math.sin(a) * r;
+    const b = rand() * 6.283, len = (4 + rand() * 16) * TEX / 2048, bend = (rand() - 0.5) * len;
+    g.strokeStyle = `rgba(214,208,198,${(0.06 + rand() * 0.14).toFixed(3)})`;
+    g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(x + Math.cos(b) * len / 2 - Math.sin(b) * bend, y + Math.sin(b) * len / 2 + Math.cos(b) * bend, x + Math.cos(b) * len, y + Math.sin(b) * len);
+    g.stroke();
+  }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return t;
 }
-// groove direction (tangent of each circle) + strength, for the light streak that slides when it tilts
+// which way the grooves smear a highlight (across the groove = along the radius), and where
 function grooveAniso() {
-  const N = 512, d = new Uint8Array(N * N * 4);
+  const N = 1024, d = new Uint8Array(N * N * 4), ss = THREE.MathUtils.smoothstep, e = 0.008;
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const u = (x + .5) / N * 2 - 1, v = (y + .5) / N * 2 - 1, l = Math.hypot(u, v) || 1, r = l * R;
     const i = (y * N + x) * 4;
-    d[i] = (-v / l * .5 + .5) * 255; d[i + 1] = (-(u / l) * .5 + .5) * 255;
-    d[i + 2] = (r > LABEL_R + 0.06 && r < R - 0.03) ? 255 : 0; d[i + 3] = 255;
+    d[i] = (u / l * .5 + .5) * 255; d[i + 1] = (v / l * .5 + .5) * 255;
+    let k = ss(r, LABEL_R + 0.08, LABEL_R + 0.08 + e) * (1 - ss(r, R - 0.045, R - 0.045 + e));
+    for (const gp of GAPS) k *= 0.35 + 0.65 * ss(Math.abs(r - gp), 0.006, 0.006 + e);
+    d[i + 2] = k * 255; d[i + 3] = 255;
   }
-  const t = new THREE.DataTexture(d, N, N); t.needsUpdate = true; t.magFilter = THREE.LinearFilter; return t;
+  const t = new THREE.DataTexture(d, N, N); t.needsUpdate = true; t.magFilter = t.minFilter = THREE.LinearFilter; return t;
 }
+// gloss: matte paper, mirror-smooth dead wax and gaps, and music that changes loudness band by band
 function roughMap() {
-  const N = 512, d = new Uint8Array(N * N * 4);
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const r = Math.hypot((x + .5) / N * 2 - 1, (y + .5) / N * 2 - 1) * R;
-    const i = (y * N + x) * 4;
-    const val = r < LABEL_R ? 0.75 : r < LABEL_R + 0.08 ? 0.22 : 0.32; // matte paper, glossy runout, grooves
-    d[i] = d[i + 1] = d[i + 2] = val * 255; d[i + 3] = 255;
+  const N = 2048, c = document.createElement('canvas'); c.width = c.height = N;
+  const g = c.getContext('2d'), m = N / 2, px = m / R;
+  const grey = v => { const b = Math.round(THREE.MathUtils.clamp(v, 0, 1) * 255); return `rgb(${b},${b},${b})`; };
+  g.fillStyle = grey(0.2); g.fillRect(0, 0, N, N);
+  let wander = 0;
+  for (let p = Math.ceil(R * px); p > LABEL_R * px; p -= 1) {
+    const r = p / px;
+    wander = wander * 0.93 + (rand() - 0.5) * 0.05;
+    let v = 0.29 + wander + (rand() - 0.5) * 0.05;
+    if (r > R - 0.04 || r < LABEL_R + 0.085) v = 0.13;
+    else if (GAPS.some(gp => Math.abs(r - gp) < 0.009)) v = 0.17;
+    g.strokeStyle = grey(v); g.lineWidth = 2; g.beginPath(); g.arc(m, m, p, 0, 7); g.stroke();
   }
-  const t = new THREE.DataTexture(d, N, N); t.needsUpdate = true; t.magFilter = THREE.LinearFilter; return t;
+  g.fillStyle = grey(0.62); g.beginPath(); g.arc(m, m, LABEL_R * px, 0, 7); g.fill();
+  const t = new THREE.CanvasTexture(c); t.anisotropy = 8; return t;
+}
+// relief you can only see in the shine: label step, the pressing ring, the gaps, the raised outer bead
+function reliefMap() {
+  const N = 2048, d = new Uint8Array(N * N * 4);
+  const bump = (r, at, w, amp) => { const x = (r - at) / w; return -2 * x * Math.exp(-x * x) * amp; }; // slope of a gaussian ridge
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = (x + .5) / N * 2 - 1, v = (y + .5) / N * 2 - 1, l = Math.hypot(u, v) || 1, r = l * R;
+    let s = bump(r, LABEL_R, 0.006, -0.5) + bump(r, 0.345, 0.006, -0.45) + bump(r, R - 0.018, 0.016, 0.5) + bump(r, LABEL_R + 0.05, 0.012, 0.18);
+    for (const gp of GAPS) s += bump(r, gp, 0.009, -0.12);
+    const nx = -s * u / l, ny = -s * v / l, nl = Math.hypot(nx, ny, 1);
+    const i = (y * N + x) * 4;
+    d[i] = (nx / nl * .5 + .5) * 255; d[i + 1] = (ny / nl * .5 + .5) * 255; d[i + 2] = (1 / nl * .5 + .5) * 255; d[i + 3] = 255;
+  }
+  const t = new THREE.DataTexture(d, N, N); t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true; t.anisotropy = 8; t.needsUpdate = true; return t;
 }
 
 const faceMat = new THREE.MeshPhysicalMaterial({
   color: '#ffffff', roughness: 1, roughnessMap: roughMap(), metalness: 0,
-  anisotropy: 0.7, anisotropyMap: grooveAniso(),
-  envMapIntensity: 0.55,
+  anisotropy: 0.85, anisotropyMap: grooveAniso(),
+  normalMap: reliefMap(), normalScale: new THREE.Vector2(1, 1),
+  specularColor: new THREE.Color(1.0, 0.9, 0.8),   // black vinyl throws window light back warm-neutral, not navy
+  envMapIntensity: 0.75,
 });
 const face = new THREE.Mesh(new THREE.CircleGeometry(R, 512), faceMat);
 face.position.z = THICK / 2;
@@ -172,7 +263,7 @@ face.castShadow = true;
 sconce.add(face);
 const edge = new THREE.Mesh(
   new THREE.CylinderGeometry(R, R, THICK, 512, 1, true),
-  new THREE.MeshPhysicalMaterial({ color: '#0d0d0e', roughness: 0.3, clearcoat: 0.5 })
+  new THREE.MeshPhysicalMaterial({ color: '#070708', roughness: 0.25 })
 );
 edge.rotation.x = Math.PI / 2;
 edge.castShadow = true;
@@ -181,52 +272,87 @@ const back = new THREE.Mesh(new THREE.CircleGeometry(R, 256), new THREE.MeshStan
 back.rotation.y = Math.PI; back.position.z = -THICK / 2; back.castShadow = true;
 sconce.add(back);
 
-// chrome dome cap on a thin bezel
-const chrome = new THREE.MeshPhysicalMaterial({ color: '#ffffff', metalness: 1, roughness: 0.035, envMapIntensity: 1.5 });
-const DOME_R = 0.188, DOME_H = 0.105, RIM_H = 0.03;
+// ---------- chrome dome cap on a rolled bezel ----------
+// A true mirror: every frame a probe at the cap photographs the room, the label and the vinyl
+// around it, and the chrome shows exactly that. No stand-in highlights.
+const probeRT = new THREE.WebGLCubeRenderTarget(mobile ? 384 : 512, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+const probe = new THREE.CubeCamera(0.02, 100, probeRT);
+probe.layers.enable(ROOM_LAYER);
+scene.add(probe);
+const chrome = new THREE.ShaderMaterial({
+  uniforms: { env: { value: probeRT.texture }, tint: { value: new THREE.Color(0.66, 0.665, 0.675) }, soft: { value: 0.6 } },
+  vertexShader: `
+    varying vec3 vPos; varying vec3 vNrm;
+    void main(){
+      vec4 w = modelMatrix * vec4(position, 1.0);
+      vPos = w.xyz; vNrm = mat3(modelMatrix) * normal;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`,
+  fragmentShader: `
+    uniform samplerCube env; uniform vec3 tint; uniform float soft;
+    varying vec3 vPos; varying vec3 vNrm;
+    void main(){
+      vec3 V = normalize(vPos - cameraPosition);
+      vec3 N = normalize(vNrm);
+      if (dot(N, V) > 0.0) N = -N;
+      vec3 Rf = reflect(V, N);
+      vec3 c = textureLod(env, Rf, soft).rgb;
+      float f = pow(1.0 - clamp(dot(N, -V), 0.0, 1.0), 5.0);
+      gl_FragColor = vec4(c * mix(tint, vec3(1.0), f), 1.0);
+    }`,
+});
 const sphR = (DOME_R * DOME_R + DOME_H * DOME_H) / (2 * DOME_H);
 const dome = new THREE.Mesh(new THREE.SphereGeometry(sphR, 256, 96, 0, Math.PI * 2, 0, Math.asin(DOME_R / sphR)), chrome);
 dome.rotation.x = Math.PI / 2;
-dome.position.z = THICK / 2 + RIM_H - (sphR - DOME_H);
+dome.position.z = THICK / 2 + SEAT - (sphR - DOME_H);
 dome.castShadow = true;
-const rim = new THREE.Mesh(new THREE.CylinderGeometry(DOME_R + 0.004, DOME_R + 0.004, RIM_H, 256), chrome);
+const prof = [new THREE.Vector2(BEZEL_R, 0), new THREE.Vector2(BEZEL_R, RIM_H - 0.01)];
+for (let i = 1; i <= 10; i++) { const a = i / 10 * Math.PI / 2; prof.push(new THREE.Vector2(BEZEL_R - 0.01 + 0.01 * Math.cos(a), RIM_H - 0.01 + 0.01 * Math.sin(a))); }
+prof.push(new THREE.Vector2(DOME_R + 0.007, RIM_H), new THREE.Vector2(DOME_R + 0.005, RIM_H - 0.002), new THREE.Vector2(DOME_R + 0.005, SEAT));
+const rim = new THREE.Mesh(new THREE.LatheGeometry(prof, 256), chrome);
 rim.rotation.x = Math.PI / 2;
-rim.position.z = THICK / 2 + RIM_H / 2;
-sconce.add(dome, rim);
+rim.position.z = THICK / 2;
+rim.castShadow = true;
+const seam = new THREE.Mesh(new THREE.RingGeometry(DOME_R - 0.004, DOME_R + 0.006, 256), new THREE.MeshBasicMaterial({ color: 0x020202 }));
+seam.position.z = THICK / 2 + SEAT;
+sconce.add(dome, rim, seam);
+const capParts = [dome, rim, seam];
+const probeAt = new THREE.Vector3();
+function shootProbe() {
+  probeAt.set(0, 0, THICK / 2 + SEAT + DOME_H * 0.55); sconce.localToWorld(probeAt);
+  probe.position.copy(probeAt);
+  for (const p of capParts) p.visible = false;
+  probe.update(renderer, scene);
+  for (const p of capParts) p.visible = true;
+}
 
 new THREE.ImageLoader().load('label.jpg', img => {
   faceMat.map = vinylFace(img);
   faceMat.needsUpdate = true;
-});
+  reveal();
+}, undefined, reveal);
 
-// ---------- lens: MSAA + focus falls off toward the edges ----------
+// ---------- film: MSAA, then a breath of grain so the wall gradient never bands ----------
 const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
 composer.addPass(new RenderPass(scene, camera));
-const LensBlur = {
-  uniforms: { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, focus: { value: 0.16 }, amount: { value: 9.0 } },
+composer.addPass(new OutputPass());
+const film = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, t: { value: 0 }, aspect: { value: 1 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform vec2 res; uniform float focus, amount; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float t, aspect; varying vec2 vUv;
+    float hash(vec2 p){ vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
     void main(){
-      vec2 p = (vUv - 0.5) * vec2(res.x / res.y, 1.0);
-      float d = length(p);
-      float coc = smoothstep(focus, focus + 0.42, d) * amount; // radius in px, sharp in the middle
-      if (coc < 0.25) { gl_FragColor = texture2D(tDiffuse, vUv); return; }
-      vec4 acc = vec4(0.0); float wsum = 0.0;
-      const float GA = 2.39996323;
-      for (int i = 0; i < 48; i++) {
-        float fi = float(i);
-        float rr = sqrt((fi + 0.5) / 48.0) * coc;
-        vec2 off = vec2(cos(fi * GA), sin(fi * GA)) * rr / res;
-        acc += texture2D(tDiffuse, vUv + off); wsum += 1.0;
-      }
-      gl_FragColor = acc / wsum;
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      vec2 p = (vUv - 0.5) * vec2(min(aspect, 1.0), min(1.0 / aspect, 1.0)) * 2.0;
+      c *= 1.0 - 0.2 * smoothstep(0.55, 1.35, length(p));
+      float n = hash(gl_FragCoord.xy + fract(t) * 291.0) + hash(gl_FragCoord.yx + fract(t * 1.37) * 173.0) - 1.0;
+      c += n * 0.016;
+      gl_FragColor = vec4(c, 1.0);
     }`,
-};
-const lens = new ShaderPass(LensBlur);
-composer.addPass(lens);
-composer.addPass(new OutputPass());
+});
+composer.addPass(film);
 
 // ---------- framing ----------
 function layout() {
@@ -234,8 +360,7 @@ function layout() {
   renderer.setSize(w, h, false);
   composer.setPixelRatio(PR);
   composer.setSize(w, h);
-  lens.uniforms.res.value.set(w * PR, h * PR);
-  lens.uniforms.amount.value = 7.0 * PR;
+  film.uniforms.aspect.value = w / h;
   camera.aspect = w / h;
   const want = R * 2 * (w < h ? 0.84 : 0.96);   // fit the glow inside the shorter side
   const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
@@ -258,7 +383,7 @@ const MAX = 0.62; // about 35 degrees
 function onDown(e) {
   dragging = true;
   start = { x: e.clientX, y: e.clientY };
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   if (!hinted) { hinted = true; document.getElementById('hint').style.opacity = 0; }
   // iOS asks once, on a tap, before it shares the gyroscope
   if (!gyroAsked && typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
@@ -302,8 +427,11 @@ renderer.setAnimationLoop(() => {
   sconce.position.z = Math.max(STANDOFF, R * Math.sin(ang) + 0.08);
   // the edge that lifts off the wall lets more light out
   halo.position.set(-tilt.x * 0.25, tilt.y * 0.25, 0.002);
-  halo.material.opacity = 0.62 + Math.min(0.1, (Math.abs(tilt.x) + Math.abs(tilt.y)) * 0.15);
+  halo.material.opacity = HALO + Math.min(0.1, (Math.abs(tilt.x) + Math.abs(tilt.y)) * 0.15);
+  film.uniforms.t.value = t;
+  renderer.shadowMap.needsUpdate = true;   // shadows once per frame, for the page camera
   composer.render();
+  shootProbe();                            // the mirror reuses them; it shows on the next frame
 });
 </script>
 </body>
